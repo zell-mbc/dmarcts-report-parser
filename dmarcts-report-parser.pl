@@ -267,6 +267,9 @@ if (exists $options{info}) {$processInfo = 1;}
 my $dbh = DBI->connect("DBI:$dbtype:database=$dbname;host=$dbhost;port=$dbport",
 	$dbuser, $dbpass)
 or die "$scriptname: Cannot connect to database\n";
+if ($db_tx_support) {
+	$dbh->{AutoCommit} = 0;
+}
 checkDatabase($dbh);
 
 
@@ -803,14 +806,6 @@ sub storeXMLInDatabase {
 		return 0;
 	}
 
-	# begin transaction
-	if ($db_tx_support) {
-		$dbh->do(qq{START TRANSACTION});
-		if ($dbh->errstr) {
-				warn "$scriptname: $org: $id: Cannot start transaction. Continuing without transaction support.\n";
-				$db_tx_support = 0;
-		}
-	}
 	# see if already stored
 	my $sth = $dbh->prepare(qq{SELECT org, serial FROM report WHERE reportid=?});
 	$sth->execute($id);
@@ -844,6 +839,7 @@ sub storeXMLInDatabase {
 		my $gzipdata;
 		if(!gzip(\$storexml => \$gzipdata)) {
 			warn "$scriptname: $org: $id: Cannot add gzip XML to database ($GzipError). Skipped.\n";
+			rollback($dbh);
 			return 0;
 			$storexml = "";
 		} else {
@@ -857,6 +853,7 @@ sub storeXMLInDatabase {
 	$dbh->do($sql, undef, $from, $to, $domain, $org, $id, $email, $extra, $policy_adkim, $policy_aspf, $policy_p, $policy_sp, $policy_pct, $storexml);
 	if ($dbh->errstr) {
 		warn "$scriptname: $org: $id: Cannot add report to database. Skipped.\n";
+		rollback($dbh);
 		return 0;
 	}
 
@@ -871,6 +868,7 @@ sub storeXMLInDatabase {
 		my $ip = $r{'row'}->{'source_ip'};
 		if ( $ip eq '' ) {
 			warn "$scriptname: $org: $id: source_ip is empty. Skipped.\n";
+			rollback($dbh);
 			return 0;
 		}
 		my $count = $r{'row'}->{'count'};
@@ -893,6 +891,7 @@ sub storeXMLInDatabase {
 		my ($dkim, $dkimresult, $spf, $spfresult, $reason);
 		if(ref $r{'auth_results'} ne "HASH"){
 			warn "$scriptname: $org: $id: Report has no auth_results data. Skipped.\n";
+			rollback($dbh);
 			return 0;
 		}
 		my $rp = $r{'auth_results'}->{'dkim'};
@@ -990,6 +989,7 @@ sub storeXMLInDatabase {
 			$iptype = "ip6";
 		} else {
 			warn "$scriptname: $org: $id: ??? mystery ip $ip\n";
+			rollback($dbh);
 			return 0;
 		}
 
@@ -997,6 +997,7 @@ sub storeXMLInDatabase {
 			VALUES(?,$ipval,?,?,?,?,?,?,?,?,?,?)},undef,$serial,$count,$disp,$spf_align,$dkim_align,$reason,$dkim,$dkimresult,$spf,$spfresult,$identifier_hfrom);
 		if ($dbh->errstr) {
 			warn "$scriptname: $org: $id: Cannot add report data to database. Skipped.\n";
+			rollback($dbh);
 			return 0;
 		}
 		return 1;
@@ -1026,16 +1027,13 @@ sub storeXMLInDatabase {
 	if ($res <= 0) {
 		if ($db_tx_support) {
 			warn "$scriptname: $org: $id: Cannot add records to rptrecord. Rolling back DB transaction.\n";
-			$dbh->do(qq{ROLLBACK});
-			if ($dbh->errstr) {
-				warn "$scriptname: $org: $id: Cannot rollback transaction.\n";
-			}
+			rollback($dbh);
 		} else {
 			warn "$scriptname: $org: $id: errors while adding to rptrecord, serial $serial records likely obsolete.\n";
 		}
 	} else {
 		if ($db_tx_support) {
-			$dbh->do(qq{COMMIT});
+			$dbh->commit;
 			if ($dbh->errstr) {
 				warn "$scriptname: $org: $id: Cannot commit transaction.\n";
 			}
@@ -1044,6 +1042,20 @@ sub storeXMLInDatabase {
 	return $res;
 }
 
+################################################################################
+
+# Tries to roll back the transaction (if enabled).
+# If an error happens, warn the user, but continue execution.
+sub rollback {
+	my $dbh = $_[0];
+
+	if ($db_tx_support) {
+		$dbh->rollback;
+		if ($dbh->errstr) {
+			warn "$scriptname: Cannot rollback transaction.\n";
+		}
+	}
+}
 
 ################################################################################
 
