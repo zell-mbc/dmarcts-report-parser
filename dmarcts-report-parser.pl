@@ -837,8 +837,8 @@ sub storeXMLInDatabase {
 		}
 	}
 
-	my $sql = qq{INSERT INTO report(serial,mindate,maxdate,domain,org,reportid,email,extra_contact_info,policy_adkim, policy_aspf, policy_p, policy_sp, policy_pct, raw_xml)
-			VALUES(NULL,FROM_UNIXTIME(?),FROM_UNIXTIME(?),?,?,?,?,?,?,?,?,?,?,?)};
+	my $sql = qq{INSERT INTO report(mindate,maxdate,domain,org,reportid,email,extra_contact_info,policy_adkim, policy_aspf, policy_p, policy_sp, policy_pct, raw_xml)
+			VALUES(FROM_UNIXTIME(?),FROM_UNIXTIME(?),?,?,?,?,?,?,?,?,?,?,?)};
 	my $storexml = $xml->{'raw_xml'};
 	if ($compress_xml) {
 		my $gzipdata;
@@ -860,7 +860,7 @@ sub storeXMLInDatabase {
 		return 0;
 	}
 
-	my $serial = $dbh->{'mysql_insertid'} ||  $dbh->{'insertid'};
+	my $serial = $dbh->last_insert_id(undef, undef, 'report', undef);
 	if ($debug){
 		print " serial $serial \n";
 	}
