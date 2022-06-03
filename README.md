@@ -65,6 +65,8 @@ or download a zip file containg all files from [here](https://github.com/techsne
 $debug = 0;
 $delete_reports = 0;
 
+# Supported types: mysql, Pg. If unset, defaults to mysql
+#$dbtype = 'mysql';
 $dbname = 'dmarc';
 $dbuser = 'dmarc';
 $dbpass = 'password';
