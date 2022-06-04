@@ -264,6 +264,12 @@ if (exists $options{delete}) {$delete_reports = 1;}
 if (exists $options{info}) {$processInfo = 1;}
 
 # Setup connection to database server.
+our %dbx;
+my $dbx_file = File::Basename::dirname($0) . "/dbx_$dbtype.pl";
+my $dbx_return = do $dbx_file;
+die "$scriptname: couldn't load DB definition for type $dbtype: $@" if $@;
+die "$scriptname: couldn't load DB definition for type $dbtype: $!" unless defined $dbx_return;
+
 my $dbh = DBI->connect("DBI:$dbtype:database=$dbname;host=$dbhost;port=$dbport",
 	$dbuser, $dbpass)
 or die "$scriptname: Cannot connect to database\n";
@@ -833,7 +839,7 @@ sub storeXMLInDatabase {
 	}
 
 	my $sql = qq{INSERT INTO report(mindate,maxdate,domain,org,reportid,email,extra_contact_info,policy_adkim, policy_aspf, policy_p, policy_sp, policy_pct, raw_xml)
-			VALUES(FROM_UNIXTIME(?),FROM_UNIXTIME(?),?,?,?,?,?,?,?,?,?,?,?)};
+			VALUES($dbx{epoch_to_timestamp_fn}(?),$dbx{epoch_to_timestamp_fn}(?),?,?,?,?,?,?,?,?,?,?,?)};
 	my $storexml = $xml->{'raw_xml'};
 	if ($compress_xml) {
 		my $gzipdata;
@@ -985,7 +991,7 @@ sub storeXMLInDatabase {
 			$ipval = unpack "N", $nip;
 			$iptype = "ip";
 		} elsif($nip = inet_pton(AF_INET6, $ip)) {
-			$ipval = "X'" . unpack("H*",$nip) . "'";
+			$ipval = $dbx{to_hex_string}($nip);
 			$iptype = "ip6";
 		} else {
 			warn "$scriptname: $org: $id: ??? mystery ip $ip\n";
