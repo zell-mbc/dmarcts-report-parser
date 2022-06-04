@@ -1119,16 +1119,10 @@ sub checkDatabase {
 			},
 	);
 
-	# Get current tables in this DB.
-	my %db_tbl_exists = ();
-	for ( @{ $dbh->selectall_arrayref( "SHOW TABLES;") } ) {
-		$db_tbl_exists{$_->[0]} = 1;
-	}
-
 	# Create missing tables and missing columns.
 	for my $table ( keys %tables ) {
 
-		if (!$db_tbl_exists{$table}) {
+		if (!db_tbl_exists($dbh, $table)) {
 
 			# Table does not exist, build CREATE TABLE cmd from tables hash.
 			print "$scriptname: Adding missing table <" . $table . "> to the database.\n";
@@ -1181,4 +1175,14 @@ sub checkDatabase {
 			}
 		}
 	}
+}
+
+################################################################################
+
+# Checks if the table exists in the database
+sub db_tbl_exists {
+	my ($dbh, $table) = @_;
+
+	my @res = $dbh->tables(undef, undef, $table, undef);
+	return scalar @res > 0;
 }
