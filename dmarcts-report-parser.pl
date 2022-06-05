@@ -1072,106 +1072,69 @@ sub rollback {
 sub checkDatabase {
 	my $dbh = $_[0];
 
-	# display width is deprecated in MySQL 8+ and will not be shown in show create statements
-	my $mysql_main_version = $dbh->selectrow_array("SELECT SUBSTRING_INDEX(VERSION(), '.', 1);") || 5;
-	my $display_width = ( $mysql_main_version <= 5 ? "(10)" : "" );
-
-	my %tables = (
-		"report" => {
-			column_definitions 		=> [
-				"serial"		, "int${ display_width } unsigned NOT NULL AUTO_INCREMENT",
-				"mindate"		, "timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
-				"maxdate"		, "timestamp NULL",
-				"domain"		, "varchar(255) NOT NULL",
-				"org"			, "varchar(255) NOT NULL",
-				"reportid"		, "varchar(255) NOT NULL",
-				"email"			, "varchar(255) NULL",
-				"extra_contact_info"	, "varchar(255) NULL",
-				"policy_adkim"		, "varchar(20) NULL",
-				"policy_aspf"		, "varchar(20) NULL",
-				"policy_p"		, "varchar(20) NULL",
-				"policy_sp"		, "varchar(20) NULL",
-				"policy_pct"		, "tinyint unsigned",
-				"raw_xml"		, "mediumtext",
-				],
-			additional_definitions 		=> "PRIMARY KEY (serial), UNIQUE KEY domain (domain,reportid)",
-			table_options			=> "ROW_FORMAT=COMPRESSED",
-			},
-		"rptrecord" =>{
-			column_definitions 		=> [
-				"id"			, "int${ display_width } unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY",
-				"serial"		, "int${ display_width } unsigned NOT NULL",
-				"ip"			, "int${ display_width } unsigned",
-				"ip6"			, "binary(16)",
-				"rcount"		, "int${ display_width } unsigned NOT NULL",
-				"disposition"		, "enum('" . join("','", ALLOWED_DISPOSITION) . "')",
-				"reason"		, "varchar(255)",
-				"dkimdomain"		, "varchar(255)",
-				"dkimresult"		, "enum('" . join("','", ALLOWED_DKIMRESULT) . "')",
-				"spfdomain"		, "varchar(255)",
-				"spfresult"		, "enum('" . join("','", ALLOWED_SPFRESULT) . "')",
-				"spf_align"		, "enum('" . join("','", ALLOWED_SPF_ALIGN) . "') NOT NULL",
-				"dkim_align"		, "enum('" . join("','", ALLOWED_DKIM_ALIGN) . "') NOT NULL",
-				"identifier_hfrom"	, "varchar(255)",
-				],
-			additional_definitions 		=> "KEY serial (serial,ip), KEY serial6 (serial,ip6)",
-			table_options			=> "",
-			},
-	);
+	my $tables = $dbx{tables};
 
 	# Create missing tables and missing columns.
-	for my $table ( keys %tables ) {
+	for my $table ( keys %{$tables} ) {
 
 		if (!db_tbl_exists($dbh, $table)) {
 
 			# Table does not exist, build CREATE TABLE cmd from tables hash.
 			print "$scriptname: Adding missing table <" . $table . "> to the database.\n";
 			my $sql_create_table = "CREATE TABLE " . $table . " (\n";
-			for (my $i=0; $i <= $#{$tables{$table}{"column_definitions"}}; $i+=2) {
-				my $col_name = $tables{$table}{"column_definitions"}[$i];
-				my $col_def = $tables{$table}{"column_definitions"}[$i+1];
+			for (my $i=0; $i <= $#{$tables->{$table}{"column_definitions"}}; $i+=3) {
+				my $col_name = $tables->{$table}{"column_definitions"}[$i];
+				my $col_type = $tables->{$table}{"column_definitions"}[$i+1];
+				my $col_opts = $tables->{$table}{"column_definitions"}[$i+2];
 				# add comma if second or later entry
 				if ($i != 0) {
 					$sql_create_table .= ",\n";
 				}
-				$sql_create_table .= $col_name . " " .$col_def;
+				$sql_create_table .= "$col_name $col_type $col_opts";
 			}
 			# Add additional_definitions, if defined.
-			if ($tables{$table}{"additional_definitions"} ne "") {
-				$sql_create_table .= ",\n" . $tables{$table}{"additional_definitions"};
+			if ($tables->{$table}{"additional_definitions"} ne "") {
+				$sql_create_table .= ",\n" . $tables->{$table}{"additional_definitions"};
 			}
 			# Add options.
-			$sql_create_table .= ") " . $tables{$table}{"table_options"} . ";";
+			$sql_create_table .= ") " . $tables->{$table}{"table_options"} . ";";
 			# Create table.
 			print "$sql_create_table\n" if $debug;
 			$dbh->do($sql_create_table);
+
+			# Create indexes.
+			foreach my $sql_idx (@{$tables->{$table}{indexes}}) {
+				print "$sql_idx\n" if $debug;
+				$dbh->do($sql_idx);
+			}
 		} else {
 
 			#Table exists, get  current columns in this table from DB.
 			my %db_col_exists = db_column_info($dbh, $table);
 
 			# Check if all needed columns are present, if not add them at the desired position.
-			my $insert_pos = "FIRST";
-			for (my $i=0; $i <= $#{$tables{$table}{"column_definitions"}}; $i+=2) {
-				my $col_name = $tables{$table}{"column_definitions"}[$i];
-				my $col_def = $tables{$table}{"column_definitions"}[$i+1];
-				my $short_def = $col_def;
-				$short_def =~ s/ +.*$//;
+			my $insert_pos;
+			for (my $i=0; $i <= $#{$tables->{$table}{"column_definitions"}}; $i+=3) {
+				my $col_name = $tables->{$table}{"column_definitions"}[$i];
+				my $col_type = $tables->{$table}{"column_definitions"}[$i+1];
+				my $col_opts = $tables->{$table}{"column_definitions"}[$i+2];
 				if (!$db_col_exists{$col_name}) {
 					# add column
-					my $sql_add_column = "ALTER TABLE $table ADD $col_name $col_def $insert_pos;";
+					my $sql_add_column = $dbx{add_column}($table, $col_name, $col_type, $col_opts, $insert_pos);
 					print "$sql_add_column\n" if $debug;
 					$dbh->do($sql_add_column);
-				} elsif ($db_col_exists{$col_name} !~ /^\Q$short_def\E/) {
+				} elsif ($db_col_exists{$col_name} !~ /^\Q$col_type\E/) {
 					# modify column
-					my $sql_modify_column = "ALTER TABLE $table MODIFY COLUMN $col_name $col_def;";
+					my $sql_modify_column = $dbx{modify_column}($table, $col_name, $col_type, $col_opts);
 					print "$sql_modify_column\n" if $debug;
 					$dbh->do($sql_modify_column);
 				}
-				$insert_pos = "AFTER $col_name";
+				$insert_pos = $col_name;
 			}
 		}
 	}
+
+	$dbh->commit;
 }
 
 ################################################################################
