@@ -1148,10 +1148,7 @@ sub checkDatabase {
 		} else {
 
 			#Table exists, get  current columns in this table from DB.
-			my %db_col_exists = ();
-			for ( @{ $dbh->selectall_arrayref( "SHOW COLUMNS FROM $table;") } ) {
-				$db_col_exists{$_->[0]} = $_->[1];
-			};
+			my %db_col_exists = db_column_info($dbh, $table);
 
 			# Check if all needed columns are present, if not add them at the desired position.
 			my $insert_pos = "FIRST";
@@ -1185,4 +1182,18 @@ sub db_tbl_exists {
 
 	my @res = $dbh->tables(undef, undef, $table, undef);
 	return scalar @res > 0;
+}
+
+################################################################################
+
+# Gets columns and their data types in a given table
+sub db_column_info {
+	my ($dbh, $table) = @_;
+
+	my $db_info = $dbh->column_info(undef, undef, $table, undef)->fetchall_hashref('COLUMN_NAME');
+	my %columns;
+	foreach my $column (keys(%$db_info)) {
+		$columns{$column} = $db_info->{$column}{$dbx{column_info_type_col}};
+	}
+	return %columns;
 }

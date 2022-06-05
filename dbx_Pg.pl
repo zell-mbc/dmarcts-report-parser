@@ -4,6 +4,7 @@
 		my ($bin) = @_;
 		return "'\\x" . unpack("H*", $bin) . "'";
 	},
+	column_info_type_col => 'pg_type',
 );
 
 1;

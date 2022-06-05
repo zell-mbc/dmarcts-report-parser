@@ -4,6 +4,7 @@
 		my ($bin) = @_;
 		return "X'" . unpack("H*", $bin) . "'";
 	},
+	column_info_type_col => 'mysql_type_name',
 );
 
 1;
