@@ -2,6 +2,7 @@
 A Perl based tool to parse DMARC reports, based on John Levine's [rddmarc](http://www.taugh.com/rddmarc/), but extended by the following features:
 * Allow to read messages from an IMAP server and not only from the local filesystem.
 * Store much more XML values into the database (for example the missing SPF and DKIM results from the policy_evaluated section) and also the entire XML for later reference.
+* Supports MySQL and PostgreSQL.
 * Needed database tables and columns are created automatically, user only needs to provide a database. The database schema is compatible to the one used by rddmarc, but extends it by additional fields. Users can switch from rddmarc to dmarcts-report-parser without having to do any changes to the database by themselves.
 * Due to limitations in stock configurations of MySQL/MariaSQL on some distros, it may be necessary
 to add the following to your configuration (i.e. in /etc/mysql/mariadb.conf.d/50-server.cnf):
@@ -19,25 +20,28 @@ To install dependencies...
 ### on Debian:
 ```
 apt-get install libfile-mimeinfo-perl libmail-imapclient-perl libmime-tools-perl libxml-simple-perl \
-libclass-dbi-mysql-perl libio-socket-inet6-perl libio-socket-ip-perl libperlio-gzip-perl \
+libio-socket-inet6-perl libio-socket-ip-perl libperlio-gzip-perl \
 libmail-mbox-messageparser-perl unzip
 ```
+Plus `libdbd-mysql-perl` for MySQL or `libdbd-pg-perl` for PostgreSQL.
 ### on Fedora (Fedora 23):
 ```
 sudo dnf install perl-File-MimeInfo perl-Mail-IMAPClient perl-MIME-tools perl-XML-Simple perl-DBI \
- perl-Socket6 perl-PerlIO-gzip perl-DBD-MySQL unzip
+ perl-Socket6 perl-PerlIO-gzip unzip
 ```
+Plus `perl-DBD-MySQL` for MySQL or `perl-DBD-Pg` for PostgreSQL.
 ### on CentOS (CentOS 7):
 ```
 yum install https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
 yum install perl-File-MimeInfo perl-Mail-IMAPClient perl-MIME-tools perl-XML-Simple perl-DBI \
- perl-Socket6 perl-PerlIO-gzip perl-DBD-MySQL unzip perl-Mail-Mbox-MessageParser
+ perl-Socket6 perl-PerlIO-gzip unzip perl-Mail-Mbox-MessageParser
  ```
+Plus `perl-DBD-MySQL` for MySQL or `perl-DBD-Pg` for PostgreSQL.
 ### on FreeBSD (FreeBSD 11.4):
 ```
-sudo pkg install p5-File-MimeInfo p5-Mail-IMAPClient p5-MIME-tools p5-XML-Simple p5-DBI p5-Socket6 p5-PerlIO-gzip p5-DBD-MySQL p5-Mail-Mbox-MessageParser unzip
+sudo pkg install p5-File-MimeInfo p5-Mail-IMAPClient p5-MIME-tools p5-XML-Simple p5-DBI p5-Socket6 p5-PerlIO-gzip p5-Mail-Mbox-MessageParser unzip
 ```
-
+Plus `p5-DBD-MySQL` for MySQL or `p5-DBD-Pg` for PostgreSQL.
  ### on macOS (macOS 10.13):
 ```
 brew install mysql shared-mime-info
@@ -45,8 +49,8 @@ update-mime-database /usr/local/share/mime
 perl -MCPAN -e 'install Mail::IMAPClient'
 perl -MCPAN -e 'install Mail::Mbox::MessageParser'
 perl -MCPAN -e 'install File::MimeInfo'
-perl -MCPAN -e 'install DBD::mysql'
 ```
+Plus `perl -MCPAN -e 'install DBD::mysql'` por MySQL or `perl -MCPAN -e 'install DBD::Pg'` or PostgreSQL.
 
 To get your copy of the dmarcts-report-parser, you can either clone the repository:
 ```
