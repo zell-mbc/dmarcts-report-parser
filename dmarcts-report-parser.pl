@@ -118,12 +118,13 @@ sub show_usage {
 
 # Define all possible configuration options.
 our ($debug, $delete_reports, $delete_failed, $reports_replace, $maxsize_xml, $compress_xml,
-	$dbname, $dbuser, $dbpass, $dbhost, $dbport, $db_tx_support,
+	$dbtype, $dbname, $dbuser, $dbpass, $dbhost, $dbport, $db_tx_support,
   $imapserver, $imapport, $imapuser, $imappass, $imapignoreerror, $imapssl, $imaptls, $imapmovefolder,
 	$imapmovefoldererr, $imapreadfolder, $imapopt, $tlsverify, $processInfo);
 
 # defaults
 $maxsize_xml 	= 50000;
+$dbtype = 'mysql';
 $db_tx_support	= 1;
 
 # used in messages
@@ -263,9 +264,18 @@ if (exists $options{delete}) {$delete_reports = 1;}
 if (exists $options{info}) {$processInfo = 1;}
 
 # Setup connection to database server.
-my $dbh = DBI->connect("DBI:mysql:database=$dbname;host=$dbhost;port=$dbport",
+our %dbx;
+my $dbx_file = File::Basename::dirname($0) . "/dbx_$dbtype.pl";
+my $dbx_return = do $dbx_file;
+die "$scriptname: couldn't load DB definition for type $dbtype: $@" if $@;
+die "$scriptname: couldn't load DB definition for type $dbtype: $!" unless defined $dbx_return;
+
+my $dbh = DBI->connect("DBI:$dbtype:database=$dbname;host=$dbhost;port=$dbport",
 	$dbuser, $dbpass)
 or die "$scriptname: Cannot connect to database\n";
+if ($db_tx_support) {
+	$dbh->{AutoCommit} = 0;
+}
 checkDatabase($dbh);
 
 
@@ -802,14 +812,6 @@ sub storeXMLInDatabase {
 		return 0;
 	}
 
-	# begin transaction
-	if ($db_tx_support) {
-		$dbh->do(qq{START TRANSACTION});
-		if ($dbh->errstr) {
-				warn "$scriptname: $org: $id: Cannot start transaction. Continuing without transaction support.\n";
-				$db_tx_support = 0;
-		}
-	}
 	# see if already stored
 	my $sth = $dbh->prepare(qq{SELECT org, serial FROM report WHERE reportid=?});
 	$sth->execute($id);
@@ -836,13 +838,14 @@ sub storeXMLInDatabase {
 		}
 	}
 
-	my $sql = qq{INSERT INTO report(serial,mindate,maxdate,domain,org,reportid,email,extra_contact_info,policy_adkim, policy_aspf, policy_p, policy_sp, policy_pct, raw_xml)
-			VALUES(NULL,FROM_UNIXTIME(?),FROM_UNIXTIME(?),?,?,?,?,?,?,?,?,?,?,?)};
+	my $sql = qq{INSERT INTO report(mindate,maxdate,domain,org,reportid,email,extra_contact_info,policy_adkim, policy_aspf, policy_p, policy_sp, policy_pct, raw_xml)
+			VALUES($dbx{epoch_to_timestamp_fn}(?),$dbx{epoch_to_timestamp_fn}(?),?,?,?,?,?,?,?,?,?,?,?)};
 	my $storexml = $xml->{'raw_xml'};
 	if ($compress_xml) {
 		my $gzipdata;
 		if(!gzip(\$storexml => \$gzipdata)) {
 			warn "$scriptname: $org: $id: Cannot add gzip XML to database ($GzipError). Skipped.\n";
+			rollback($dbh);
 			return 0;
 			$storexml = "";
 		} else {
@@ -856,10 +859,11 @@ sub storeXMLInDatabase {
 	$dbh->do($sql, undef, $from, $to, $domain, $org, $id, $email, $extra, $policy_adkim, $policy_aspf, $policy_p, $policy_sp, $policy_pct, $storexml);
 	if ($dbh->errstr) {
 		warn "$scriptname: $org: $id: Cannot add report to database. Skipped.\n";
+		rollback($dbh);
 		return 0;
 	}
 
-	my $serial = $dbh->{'mysql_insertid'} ||  $dbh->{'insertid'};
+	my $serial = $dbh->last_insert_id(undef, undef, 'report', undef);
 	if ($debug){
 		print " serial $serial \n";
 	}
@@ -870,6 +874,7 @@ sub storeXMLInDatabase {
 		my $ip = $r{'row'}->{'source_ip'};
 		if ( $ip eq '' ) {
 			warn "$scriptname: $org: $id: source_ip is empty. Skipped.\n";
+			rollback($dbh);
 			return 0;
 		}
 		my $count = $r{'row'}->{'count'};
@@ -892,6 +897,7 @@ sub storeXMLInDatabase {
 		my ($dkim, $dkimresult, $spf, $spfresult, $reason);
 		if(ref $r{'auth_results'} ne "HASH"){
 			warn "$scriptname: $org: $id: Report has no auth_results data. Skipped.\n";
+			rollback($dbh);
 			return 0;
 		}
 		my $rp = $r{'auth_results'}->{'dkim'};
@@ -985,10 +991,11 @@ sub storeXMLInDatabase {
 			$ipval = unpack "N", $nip;
 			$iptype = "ip";
 		} elsif($nip = inet_pton(AF_INET6, $ip)) {
-			$ipval = "X'" . unpack("H*",$nip) . "'";
+			$ipval = $dbx{to_hex_string}($nip);
 			$iptype = "ip6";
 		} else {
 			warn "$scriptname: $org: $id: ??? mystery ip $ip\n";
+			rollback($dbh);
 			return 0;
 		}
 
@@ -996,6 +1003,7 @@ sub storeXMLInDatabase {
 			VALUES(?,$ipval,?,?,?,?,?,?,?,?,?,?)},undef,$serial,$count,$disp,$spf_align,$dkim_align,$reason,$dkim,$dkimresult,$spf,$spfresult,$identifier_hfrom);
 		if ($dbh->errstr) {
 			warn "$scriptname: $org: $id: Cannot add report data to database. Skipped.\n";
+			rollback($dbh);
 			return 0;
 		}
 		return 1;
@@ -1025,16 +1033,13 @@ sub storeXMLInDatabase {
 	if ($res <= 0) {
 		if ($db_tx_support) {
 			warn "$scriptname: $org: $id: Cannot add records to rptrecord. Rolling back DB transaction.\n";
-			$dbh->do(qq{ROLLBACK});
-			if ($dbh->errstr) {
-				warn "$scriptname: $org: $id: Cannot rollback transaction.\n";
-			}
+			rollback($dbh);
 		} else {
 			warn "$scriptname: $org: $id: errors while adding to rptrecord, serial $serial records likely obsolete.\n";
 		}
 	} else {
 		if ($db_tx_support) {
-			$dbh->do(qq{COMMIT});
+			$dbh->commit;
 			if ($dbh->errstr) {
 				warn "$scriptname: $org: $id: Cannot commit transaction.\n";
 			}
@@ -1043,6 +1048,20 @@ sub storeXMLInDatabase {
 	return $res;
 }
 
+################################################################################
+
+# Tries to roll back the transaction (if enabled).
+# If an error happens, warn the user, but continue execution.
+sub rollback {
+	my $dbh = $_[0];
+
+	if ($db_tx_support) {
+		$dbh->rollback;
+		if ($dbh->errstr) {
+			warn "$scriptname: Cannot rollback transaction.\n";
+		}
+	}
+}
 
 ################################################################################
 
@@ -1053,113 +1072,91 @@ sub storeXMLInDatabase {
 sub checkDatabase {
 	my $dbh = $_[0];
 
-	# display width is deprecated in MySQL 8+ and will not be shown in show create statements
-	my $mysql_main_version = $dbh->selectrow_array("SELECT SUBSTRING_INDEX(VERSION(), '.', 1);") || 5;
-	my $display_width = ( $mysql_main_version <= 5 ? "(10)" : "" );
-
-	my %tables = (
-		"report" => {
-			column_definitions 		=> [
-				"serial"		, "int${ display_width } unsigned NOT NULL AUTO_INCREMENT",
-				"mindate"		, "timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
-				"maxdate"		, "timestamp NULL",
-				"domain"		, "varchar(255) NOT NULL",
-				"org"			, "varchar(255) NOT NULL",
-				"reportid"		, "varchar(255) NOT NULL",
-				"email"			, "varchar(255) NULL",
-				"extra_contact_info"	, "varchar(255) NULL",
-				"policy_adkim"		, "varchar(20) NULL",
-				"policy_aspf"		, "varchar(20) NULL",
-				"policy_p"		, "varchar(20) NULL",
-				"policy_sp"		, "varchar(20) NULL",
-				"policy_pct"		, "tinyint unsigned",
-				"raw_xml"		, "mediumtext",
-				],
-			additional_definitions 		=> "PRIMARY KEY (serial), UNIQUE KEY domain (domain,reportid)",
-			table_options			=> "ROW_FORMAT=COMPRESSED",
-			},
-		"rptrecord" =>{
-			column_definitions 		=> [
-				"id"			, "int${ display_width } unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY",
-				"serial"		, "int${ display_width } unsigned NOT NULL",
-				"ip"			, "int${ display_width } unsigned",
-				"ip6"			, "binary(16)",
-				"rcount"		, "int${ display_width } unsigned NOT NULL",
-				"disposition"		, "enum('" . join("','", ALLOWED_DISPOSITION) . "')",
-				"reason"		, "varchar(255)",
-				"dkimdomain"		, "varchar(255)",
-				"dkimresult"		, "enum('" . join("','", ALLOWED_DKIMRESULT) . "')",
-				"spfdomain"		, "varchar(255)",
-				"spfresult"		, "enum('" . join("','", ALLOWED_SPFRESULT) . "')",
-				"spf_align"		, "enum('" . join("','", ALLOWED_SPF_ALIGN) . "') NOT NULL",
-				"dkim_align"		, "enum('" . join("','", ALLOWED_DKIM_ALIGN) . "') NOT NULL",
-				"identifier_hfrom"	, "varchar(255)",
-				],
-			additional_definitions 		=> "KEY serial (serial,ip), KEY serial6 (serial,ip6)",
-			table_options			=> "",
-			},
-	);
-
-	# Get current tables in this DB.
-	my %db_tbl_exists = ();
-	for ( @{ $dbh->selectall_arrayref( "SHOW TABLES;") } ) {
-		$db_tbl_exists{$_->[0]} = 1;
-	}
+	my $tables = $dbx{tables};
 
 	# Create missing tables and missing columns.
-	for my $table ( keys %tables ) {
+	for my $table ( keys %{$tables} ) {
 
-		if (!$db_tbl_exists{$table}) {
+		if (!db_tbl_exists($dbh, $table)) {
 
 			# Table does not exist, build CREATE TABLE cmd from tables hash.
 			print "$scriptname: Adding missing table <" . $table . "> to the database.\n";
 			my $sql_create_table = "CREATE TABLE " . $table . " (\n";
-			for (my $i=0; $i <= $#{$tables{$table}{"column_definitions"}}; $i+=2) {
-				my $col_name = $tables{$table}{"column_definitions"}[$i];
-				my $col_def = $tables{$table}{"column_definitions"}[$i+1];
+			for (my $i=0; $i <= $#{$tables->{$table}{"column_definitions"}}; $i+=3) {
+				my $col_name = $tables->{$table}{"column_definitions"}[$i];
+				my $col_type = $tables->{$table}{"column_definitions"}[$i+1];
+				my $col_opts = $tables->{$table}{"column_definitions"}[$i+2];
 				# add comma if second or later entry
 				if ($i != 0) {
 					$sql_create_table .= ",\n";
 				}
-				$sql_create_table .= $col_name . " " .$col_def;
+				$sql_create_table .= "$col_name $col_type $col_opts";
 			}
 			# Add additional_definitions, if defined.
-			if ($tables{$table}{"additional_definitions"} ne "") {
-				$sql_create_table .= ",\n" . $tables{$table}{"additional_definitions"};
+			if ($tables->{$table}{"additional_definitions"} ne "") {
+				$sql_create_table .= ",\n" . $tables->{$table}{"additional_definitions"};
 			}
 			# Add options.
-			$sql_create_table .= ") " . $tables{$table}{"table_options"} . ";";
+			$sql_create_table .= ") " . $tables->{$table}{"table_options"} . ";";
 			# Create table.
 			print "$sql_create_table\n" if $debug;
 			$dbh->do($sql_create_table);
+
+			# Create indexes.
+			foreach my $sql_idx (@{$tables->{$table}{indexes}}) {
+				print "$sql_idx\n" if $debug;
+				$dbh->do($sql_idx);
+			}
 		} else {
 
 			#Table exists, get  current columns in this table from DB.
-			my %db_col_exists = ();
-			for ( @{ $dbh->selectall_arrayref( "SHOW COLUMNS FROM $table;") } ) {
-				$db_col_exists{$_->[0]} = $_->[1];
-			};
+			my %db_col_exists = db_column_info($dbh, $table);
 
 			# Check if all needed columns are present, if not add them at the desired position.
-			my $insert_pos = "FIRST";
-			for (my $i=0; $i <= $#{$tables{$table}{"column_definitions"}}; $i+=2) {
-				my $col_name = $tables{$table}{"column_definitions"}[$i];
-				my $col_def = $tables{$table}{"column_definitions"}[$i+1];
-				my $short_def = $col_def;
-				$short_def =~ s/ +.*$//;
+			my $insert_pos;
+			for (my $i=0; $i <= $#{$tables->{$table}{"column_definitions"}}; $i+=3) {
+				my $col_name = $tables->{$table}{"column_definitions"}[$i];
+				my $col_type = $tables->{$table}{"column_definitions"}[$i+1];
+				my $col_opts = $tables->{$table}{"column_definitions"}[$i+2];
 				if (!$db_col_exists{$col_name}) {
 					# add column
-					my $sql_add_column = "ALTER TABLE $table ADD $col_name $col_def $insert_pos;";
+					my $sql_add_column = $dbx{add_column}($table, $col_name, $col_type, $col_opts, $insert_pos);
 					print "$sql_add_column\n" if $debug;
 					$dbh->do($sql_add_column);
-				} elsif ($db_col_exists{$col_name} !~ /^\Q$short_def\E/) {
+				} elsif ($db_col_exists{$col_name} !~ /^\Q$col_type\E/) {
 					# modify column
-					my $sql_modify_column = "ALTER TABLE $table MODIFY COLUMN $col_name $col_def;";
+					my $sql_modify_column = $dbx{modify_column}($table, $col_name, $col_type, $col_opts);
 					print "$sql_modify_column\n" if $debug;
 					$dbh->do($sql_modify_column);
 				}
-				$insert_pos = "AFTER $col_name";
+				$insert_pos = $col_name;
 			}
 		}
 	}
+
+	$dbh->commit;
+}
+
+################################################################################
+
+# Checks if the table exists in the database
+sub db_tbl_exists {
+	my ($dbh, $table) = @_;
+
+	my @res = $dbh->tables(undef, undef, $table, undef);
+	return scalar @res > 0;
+}
+
+################################################################################
+
+# Gets columns and their data types in a given table
+sub db_column_info {
+	my ($dbh, $table) = @_;
+
+	my $db_info = $dbh->column_info(undef, undef, $table, undef)->fetchall_hashref('COLUMN_NAME');
+	my %columns;
+	foreach my $column (keys(%$db_info)) {
+		$columns{$column} = $db_info->{$column}{$dbx{column_info_type_col}};
+	}
+	return %columns;
 }
